@@ -1,0 +1,149 @@
+/* 1. Query all columns for all Mexicans cities in CITY with populations larger than 100000. The
+CountryCode for Mexico is MX. */
+
+SELECT * FROM CITY 
+WHERE POPULATION > 100000 
+AND COUNTRYCODE = 'MX';
+
+
+
+
+/* Remove all rows which have population minor than 100, because its error. */
+DELETE FROM CITY
+WHERE POPULATION < 100;
+
+
+
+/*Update the rows which have the same district name, adding their countrycode to the same district
+field.*/
+UPDATE(SELECT CITY
+FROM CITY c1, CITY c2
+WHERE c1.DISTRICT = c2.DISTRICT)
+-- Operational as long as LEN(c1.DISTRICT) <= 14
+SET CITY.DISTRICT = ISNULL(CITY.DISTRICT,'') + ' (' + c2.COUNTRYCODE + ')';
+
+
+
+/*In which countries / cities do we have clients? */
+SELECT CITY.NAME, CITY.COUNTRYCODE 
+FROM (
+SELECT DISTINCT CITYID FROM CUSTOMERS
+) AS cityIDList
+WHERE cityIDList.ID = CITY.ID;
+
+
+
+/*In which countries do we not have clients?*/
+SELECT COUNTRY.NAME
+FROM (
+SELECT DISTINCT CITYID FROM CUSTOMERS
+) AS cityIDList
+WHERE cityIDList.ID <> COUNTRY.ID;
+
+
+
+/*How many new customers we have by date in the last three months?*/
+SET time_zone = '+00:00';
+declare @currentDate DATETIME DEFAULT DATE(CURRENT_TIMESTAMP);
+declare @threeMonthsAgo DATETIME DEFAULT DATE_SUB(@currentDate, INTERVAL 3 MONTH);
+
+SELECT COUNT(*) as "New customers in the last three months"
+FROM CUSTOMERS
+WHERE DATEDIFF(DATE(CUSTOMERS.CREATIONTIME),@threeMonthsAgo) > 0;
+
+
+
+/*Which are our top five countries/cities by total of customers */
+SELECT COUNTRYCODE, COUNT(*) totalCustomers FROM CUSTOMER 
+GROUP BY COUNTRYCODE
+ORDER BY COUNT(*) DESC
+LIMIT 5;
+
+
+
+/*Which are our top five customers ordered by amount of sales, including the number and total
+amount of sales*/    
+SELECT * FROM CUSTOMER AS customerList, ( 
+        SELECT CUSTOMERID,
+        FORMAT(SUM(AMOUNT),2) totalSales, COUNT(*) totalInvoices
+        FROM INVOICE
+        GROUP BY CUSTOMERID
+        ORDER BY SUM(AMOUNT) DESC, COUNT(*) DESC
+    ) AS orderedCustomers
+WHERE orderedCustomers.CUSTOMERID = customerList.ID
+LIMIT 5;
+
+
+
+/*Which customers have more than three months without an invoice?*/
+SET time_zone = '+00:00';
+declare @currentDate DATETIME DEFAULT DATE(CURRENT_TIMESTAMP);
+declare @threeMonthsAgo DATETIME DEFAULT DATE_SUB(@currentDate, INTERVAL 3 MONTH);
+
+SELECT DISTINCT *
+    FROM (
+        SELECT DISTINCT CUSTOMERID FROM INVOICE
+        WHERE (DATEDIFF(DATE(INVOICE.CREATIONTIME), @threeMonthsAgo) > 0)
+    ) AS recentInvoices, CUSTOMER
+WHERE recentInvoices.CUSTOMERID <> CUSTOMER.ID;
+
+
+
+/*What is the average amount of sales by country?*/
+SELECT COUNTRYCODE, FORMAT(SUM(AMOUNT) / COUNT(*),2) averageSales
+FROM INVOICE
+GROUP BY COUNTRYCODE
+
+
+
+/*Mark as inactive (STATUS = 0) all the customers with more than six months since its creation and
+without sales*/
+SET time_zone = '+00:00';
+declare @currentDate DATETIME DEFAULT DATE(CURRENT_TIMESTAMP);
+declare @sixMonthsAgo DATETIME DEFAULT DATE_SUB(@currentDate, INTERVAL 6 MONTH);
+UPDATE (SELECT CUSTOMER
+    FROM CUSTOMER fullCustomers, (
+        SELECT DISTINCT CUSTOMERID FROM INVOICE
+        WHERE (DATEDIFF(DATE(INVOICE.CREATIONTIME), @sixMonthsAgo) > 0)
+        AND INVOICE.AMOUNT <> 0
+        ) AS activeCustomers
+    WHERE activeCustomers.CUSTOMERID <> fullCustomers.ID;
+    )
+SET STATUS = 0;
+
+
+
+/*We need the number and amount of paid invoices (invoice STATUS = 2) and unpaid invoices
+(invoice STATUS = 1) by customer, for ALL​ the active customers (customer STATUS = 1) */
+SELECT FORMAT(SUM(INVOICE.AMOUNT),2) totalSalesOfPaid, 
+    COUNT(CASE WHEN INVOICE.STATUS = 2 THEN 1 END) numberOfPaid, 
+    COUNT(CASE WHEN INVOICE.STATUS = 1 THEN 1 END) numberOfUnpaid
+    FROM INVOICE, (SELECT ID FROM CUSTOMER
+        WHERE CUSTOMER.STATUS = 1
+        ) AS activeCustomers
+WHERE activeCustomers.ID = INVOICE.CUSTOMERID;
+
+
+
+/*Add the country code of the customer to all the invoices reference*/
+ALTER TABLE INVOICE
+ADD COUNTRYCODE varchar(3);
+
+UPDATE INVOICE
+INNER JOIN (SELECT CITY.COUNTRYCODE, INVOICE.CUSTOMERID 
+    FROM ((SELECT CUSTOMER.CITYID, INVOICE.CUSTOMERID
+           FROM (INVOICE
+                 INNER JOIN CUSTOMER ON INVOICE.CUSTOMERID = CUSTOMER.ID)) 
+    INNER JOIN CITY ON CITY.ID = CUSTOMER.CITYID)) AS compactTable USING (CUSTOMERID)
+SET INVOICE.COUNTRYCODE = compactTable.COUNTRYCODE;
+
+    
+  
+/*Remove the cancelled invoices (invoice STATUS = 3) older than one year*/
+SET current_timestamp = '+00:00';
+declare @currentDate DATETIME DEFAULT DATE(CURRENT_TIMESTAMP);
+declare @oneYearAgo DATETIME DEFAULT DATE_SUB(@currentDate, INTERVAL 1 YEAR);
+
+DELETE FROM INVOICE
+WHERE INVOICE.STATUS = 3 
+AND (DATEDIFF(DATE(INVOICE.CREATIONTIME), @oneYearAgo) > 0);
